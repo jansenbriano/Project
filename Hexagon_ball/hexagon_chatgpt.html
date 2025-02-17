@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Ensure proper scaling on mobile devices -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Solid Hexagon with Bouncing Ball and Extended Trail</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <!-- p5.js library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+  <script>
+    let WIDTH, HEIGHT;
+    let HEX_CENTER;
+    let HEX_RADIUS;
+    let hexAngle = 0;
+    const HEX_ROT_SPEED = 0.01;
+    
+    // Ball parameters – these scale relative to the hexagon.
+    let ballPos;
+    let ballVel;
+    let ballRadius;
+    
+    const GRAVITY = 0.5;       // gravitational acceleration (pixels/frame^2)
+    const AIR_FRICTION = 0.999;  // damping on the ball's velocity each frame
+    const RESTITUTION = 0.9;     // energy loss on collision
+    
+    // Graphics buffer to store the ball's trail.
+    let trailLayer;
+    // Store the previous position of the ball for drawing the trail line.
+    let prevBallPos;
+    
+    function setup() {
+      WIDTH = windowWidth;
+      HEIGHT = windowHeight;
+      createCanvas(WIDTH, HEIGHT);
+      
+      // Create the trail layer with the same dimensions.
+      trailLayer = createGraphics(WIDTH, HEIGHT);
+      trailLayer.background(0);
+      
+      // Set hexagon center and a responsive radius.
+      HEX_CENTER = createVector(WIDTH / 2, HEIGHT / 2);
+      HEX_RADIUS = min(WIDTH, HEIGHT) * 0.3;
+      
+      // Define the ball's radius as a fraction of the hexagon's radius.
+      ballRadius = HEX_RADIUS * 0.05;
+      
+      // Initialize ball position ensuring it is not too close to any hexagon edge.
+      ballPos = randomPointInHexagon();
+      // Set an initial velocity – random horizontal and downward speed.
+      ballVel = createVector(random(-3, 3), random(2, 8));
+      
+      // Set previous ball position to the initial position.
+      prevBallPos = ballPos.copy();
+    }
+    
+    function draw() {
+      // Clear the main canvas.
+      background(0);
+      
+      // Update hexagon rotation and compute its vertices.
+      hexAngle += HEX_ROT_SPEED;
+      let hexVertices = computeHexagonVertices(HEX_CENTER, HEX_RADIUS, hexAngle);
+      
+      // Update ball physics.
+      ballVel.y += GRAVITY;
+      ballVel.mult(AIR_FRICTION);
+      ballPos.add(ballVel);
+      
+      // Collision detection and response for each hexagon edge.
+      for (let i = 0; i < hexVertices.length; i++) {
+        let a = hexVertices[i];
+        let b = hexVertices[(i + 1) % hexVertices.length];
+        let { dist, closest } = pointLineDistance(ballPos, a, b);
+        
+        if (dist < ballRadius) {
+          // Compute collision normal (from wall toward the ball).
+          let normal = p5.Vector.sub(ballPos, closest);
+          let norm = normal.mag();
+          if (norm === 0) continue;
+          normal.normalize();
+          
+          // Determine the wall’s velocity at the collision point.
+          let wallVel = wallVelocityAtPoint(closest, HEX_CENTER, HEX_ROT_SPEED);
+          
+          // Compute ball's relative velocity (ball minus wall).
+          let relVel = p5.Vector.sub(ballVel, wallVel);
+          let relDotN = relVel.dot(normal);
+          
+          // Reflect only if the ball is moving into the wall.
+          if (relDotN < 0) {
+            relVel.sub(p5.Vector.mult(normal, 2 * relDotN));
+            relVel.mult(RESTITUTION);
+            ballVel = p5.Vector.add(wallVel, relVel);
+            // Nudge the ball so it doesn't remain embedded.
+            let overlap = ballRadius - dist;
+            ballPos.add(p5.Vector.mult(normal, overlap));
+          }
+        }
+      }
+      
+      // --- CLAMP THE BALL INSIDE THE HEXAGON ---
+      clampBallToHexagon(hexVertices);
+      
+      // --- UPDATE THE TRAIL LAYER (THIN, LONGER LINE) ---
+      // Draw a translucent black rectangle over the trailLayer to slowly fade previous trails.
+      // Using a lower alpha (20 instead of 50) makes the trail last longer.
+      trailLayer.fill(0, 0, 0, 20);
+      trailLayer.noStroke();
+      trailLayer.rect(0, 0, WIDTH, HEIGHT);
+      
+      // Draw a thicker, thin line from the previous ball position to the current position.
+      trailLayer.stroke(255, 50, 50, 200);
+      trailLayer.strokeWeight(3);
+      trailLayer.line(prevBallPos.x, prevBallPos.y, ballPos.x, ballPos.y);
+      
+      // Update the previous ball position.
+      prevBallPos = ballPos.copy();
+      
+      // Draw the trail layer onto the main canvas.
+      image(trailLayer, 0, 0);
+      
+      // --- DRAW THE HEXAGON AND BALL ---
+      // Draw hexagon boundary.
+      stroke(50, 50, 255);
+      strokeWeight(3);
+      noFill();
+      beginShape();
+      for (let v of hexVertices) {
+        vertex(v.x, v.y);
+      }
+      endShape(CLOSE);
+      
+      // Draw the ball.
+      noStroke();
+      fill(255, 50, 50);
+      ellipse(ballPos.x, ballPos.y, ballRadius * 2);
+    }
+    
+    // Adjust ball position (and reflect velocity if needed) so its center stays at least ballRadius from every edge.
+    function clampBallToHexagon(vertices) {
+      for (let i = 0; i < vertices.length; i++) {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.length];
+        let n = getInwardNormal(a, b, HEX_CENTER);
+        // Compute signed distance from ballPos to the edge.
+        let d = p5.Vector.sub(ballPos, a).dot(n);
+        if (d < ballRadius) {
+          let correction = (ballRadius - d);
+          ballPos.add(p5.Vector.mult(n, correction));
+          if (ballVel.dot(n) < 0) {
+            let vOut = ballVel.dot(n);
+            ballVel.sub(p5.Vector.mult(n, 1.5 * vOut));
+          }
+        }
+      }
+    }
+    
+    // Compute the inward normal for edge from a to b, given the hexagon center.
+    function getInwardNormal(a, b, center) {
+      let edge = p5.Vector.sub(b, a);
+      let candidate = createVector(-edge.y, edge.x);
+      let toCenter = p5.Vector.sub(center, a);
+      if (toCenter.dot(candidate) < 0) {
+        candidate.mult(-1);
+      }
+      candidate.normalize();
+      return candidate;
+    }
+    
+    // When the window is resized, update the canvas and adjust simulation parameters.
+    function windowResized() {
+      let oldHexCenter = HEX_CENTER.copy();
+      let oldHexRadius = HEX_RADIUS;
+      
+      WIDTH = windowWidth;
+      HEIGHT = windowHeight;
+      resizeCanvas(WIDTH, HEIGHT);
+      
+      // Recreate the trail layer with new dimensions.
+      trailLayer = createGraphics(WIDTH, HEIGHT);
+      trailLayer.background(0);
+      
+      HEX_CENTER = createVector(WIDTH / 2, HEIGHT / 2);
+      HEX_RADIUS = min(WIDTH, HEIGHT) * 0.3;
+      
+      ballRadius = HEX_RADIUS * 0.05;
+      
+      // Transform ball position relative to new hexagon parameters.
+      let offset = p5.Vector.sub(ballPos, oldHexCenter);
+      let scale = HEX_RADIUS / oldHexRadius;
+      offset.mult(scale);
+      ballPos = p5.Vector.add(HEX_CENTER, offset);
+      
+      ballVel.mult(scale);
+      
+      // Also adjust the previous ball position.
+      let prevOffset = p5.Vector.sub(prevBallPos, oldHexCenter);
+      prevOffset.mult(scale);
+      prevBallPos = p5.Vector.add(HEX_CENTER, prevOffset);
+    }
+    
+    // Returns an array of 6 vertices (p5.Vector) for a hexagon rotated by "angle" around "center".
+    function computeHexagonVertices(center, radius, angle) {
+      let vertices = [];
+      for (let i = 0; i < 6; i++) {
+        let theta = angle + i * (TWO_PI / 6);
+        let x = center.x + radius * cos(theta);
+        let y = center.y + radius * sin(theta);
+        vertices.push(createVector(x, y));
+      }
+      return vertices;
+    }
+    
+    // Returns an object { dist, closest } for the distance from point pt to the line segment ab.
+    function pointLineDistance(pt, a, b) {
+      let ab = p5.Vector.sub(b, a);
+      let ap = p5.Vector.sub(pt, a);
+      let abSquared = ab.magSq();
+      if (abSquared === 0) {
+        return { dist: p5.Vector.dist(pt, a), closest: a.copy() };
+      }
+      let t = constrain(ap.dot(ab) / abSquared, 0, 1);
+      let closest = p5.Vector.add(a, p5.Vector.mult(ab, t));
+      let dist = p5.Vector.dist(pt, closest);
+      return { dist, closest };
+    }
+    
+    // Given a rotating body about "center" with angular speed "angularSpeed",
+    // returns the linear velocity of a given point (as a p5.Vector).
+    function wallVelocityAtPoint(point, center, angularSpeed) {
+      let r = p5.Vector.sub(point, center);
+      return createVector(-r.y * angularSpeed, r.x * angularSpeed);
+    }
+    
+    // Returns a random point within the current hexagon that is at least ballRadius away from every edge.
+    function randomPointInHexagon() {
+      let vertices = computeHexagonVertices(HEX_CENTER, HEX_RADIUS, hexAngle);
+      let pt;
+      let attempts = 0;
+      while (attempts < 1000) {
+        pt = createVector(
+          random(HEX_CENTER.x - HEX_RADIUS, HEX_CENTER.x + HEX_RADIUS),
+          random(HEX_CENTER.y - HEX_RADIUS, HEX_CENTER.y + HEX_RADIUS)
+        );
+        attempts++;
+        if (!pointInPolygon(pt, vertices)) continue;
+        let valid = true;
+        for (let i = 0; i < vertices.length; i++) {
+          let a = vertices[i];
+          let b = vertices[(i + 1) % vertices.length];
+          let { dist } = pointLineDistance(pt, a, b);
+          if (dist < ballRadius) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) {
+          return pt;
+        }
+      }
+      return HEX_CENTER.copy();
+    }
+    
+    // Ray-casting algorithm: returns true if pt is inside the polygon defined by vertices.
+    function pointInPolygon(pt, vertices) {
+      let x = pt.x, y = pt.y;
+      let inside = false;
+      for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+        let xi = vertices[i].x, yi = vertices[i].y;
+        let xj = vertices[j].x, yj = vertices[j].y;
+        let intersect = ((yi > y) != (yj > y)) &&
+                        (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+  </script>
+</body>
+</html>
