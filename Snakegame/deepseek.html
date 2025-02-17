@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Competitive Snake AI</title>
+    <style>
+        canvas { border: 2px solid white; background: black; }
+        body { background: #333; color: white; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="score">Red: 0 | Blue: 0</div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gridSize = 20;
+        const AI_UPDATE_INTERVAL = 5;
+
+        class PriorityQueue {
+            constructor() {
+                this.elements = [];
+            }
+
+            enqueue(element, priority) {
+                this.elements.push({ element, priority });
+                this.elements.sort((a, b) => a.priority - b.priority);
+            }
+
+            dequeue() {
+                return this.elements.shift().element;
+            }
+
+            isEmpty() {
+                return this.elements.length === 0;
+            }
+        }
+
+        class Snake {
+            constructor(x, y, color, direction) {
+                this.body = [{ x, y }];
+                this.direction = direction;
+                this.color = color;
+                this.score = 0;
+                this.alive = true;
+                this.moveTimer = 0;
+                this.moveDelay = 8;
+                this.aiTimer = 0;
+                this.plannedPath = [];
+            }
+
+            update() {
+                if (!this.alive) return;
+
+                this.moveTimer++;
+                this.aiTimer++;
+
+                if (this.aiTimer >= AI_UPDATE_INTERVAL) {
+                    this.calculatePath();
+                    this.aiTimer = 0;
+                }
+
+                if (this.moveTimer >= this.moveDelay) {
+                    this.executeMove();
+                    this.moveTimer = 0;
+                }
+            }
+
+            calculatePath() {
+                const head = this.body[0];
+                const foodPos = this.toGrid(food);
+                const obstacles = this.getObstacles();
+                
+                this.plannedPath = this.aStarPath(this.toGrid(head), foodPos, obstacles);
+                this.updateDirection();
+            }
+
+            aStarPath(start, end, obstacles) {
+                const gridWidth = canvas.width / gridSize;
+                const gridHeight = canvas.height / gridSize;
+                const openSet = new PriorityQueue();
+                const cameFrom = new Map();
+                const gScore = new Map();
+                const fScore = new Map();
+                const startKey = `${start.x},${start.y}`;
+
+                gScore.set(startKey, 0);
+                fScore.set(startKey, this.heuristic(start, end));
+                openSet.enqueue(start, this.heuristic(start, end));
+
+                while (!openSet.isEmpty()) {
+                    const current = openSet.dequeue();
+                    const currentKey = `${current.x},${current.y}`;
+
+                    if (current.x === end.x && current.y === end.y) {
+                        return this.reconstructPath(cameFrom, current);
+                    }
+
+                    for (const neighbor of this.getNeighbors(current)) {
+                        const neighborKey = `${neighbor.x},${neighbor.y}`;
+                        if (neighbor.x < 0 || neighbor.x >= gridWidth || 
+                            neighbor.y < 0 || neighbor.y >= gridHeight) continue;
+                        if (obstacles.has(neighborKey)) continue;
+
+                        const tentativeGScore = (gScore.get(currentKey) || Infinity) + 1;
+                        
+                        if (tentativeGScore < (gScore.get(neighborKey) || Infinity)) {
+                            cameFrom.set(neighborKey, current);
+                            gScore.set(neighborKey, tentativeGScore);
+                            const f = tentativeGScore + this.heuristic(neighbor, end);
+                            fScore.set(neighborKey, f);
+                            
+                            if (!openSet.elements.some(e => 
+                                e.element.x === neighbor.x && e.element.y === neighbor.y)) {
+                                openSet.enqueue(neighbor, f);
+                            }
+                        }
+                    }
+                }
+                return null;
+            }
+
+            updateDirection() {
+                if (!this.plannedPath || this.plannedPath.length < 2) return;
+
+                const head = this.toGrid(this.body[0]);
+                const nextStep = this.plannedPath[1];
+                const dx = nextStep.x - head.x;
+                const dy = nextStep.y - head.y;
+
+                if (dx === -this.direction.dx && dy === -this.direction.dy) return;
+                this.direction = { dx, dy };
+            }
+
+            executeMove() {
+                const newHead = {
+                    x: this.body[0].x + this.direction.dx * gridSize,
+                    y: this.body[0].y + this.direction.dy * gridSize
+                };
+
+                if (this.isCollision(newHead)) {
+                    this.alive = false;
+                    return;
+                }
+
+                this.body.unshift(newHead);
+                if (newHead.x === food.x && newHead.y === food.y) {
+                    this.score++;
+                    placeFood();
+                } else {
+                    this.body.pop();
+                }
+            }
+
+            getObstacles() {
+                const obstacles = new Set();
+                snakes.forEach(s => s.body.forEach((segment, index) => {
+                    if (s === this && index === 0) return; // Ignore own head
+                    const gridPos = this.toGrid(segment);
+                    obstacles.add(`${gridPos.x},${gridPos.y}`);
+                }));
+                return obstacles;
+            }
+
+            heuristic(a, b) {
+                return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+            }
+
+            reconstructPath(cameFrom, current) {
+                const path = [current];
+                while (cameFrom.has(`${current.x},${current.y}`)) {
+                    current = cameFrom.get(`${current.x},${current.y}`);
+                    path.unshift(current);
+                }
+                return path;
+            }
+
+            getNeighbors(node) {
+                return [
+                    { x: node.x - 1, y: node.y },
+                    { x: node.x + 1, y: node.y },
+                    { x: node.x, y: node.y - 1 },
+                    { x: node.x, y: node.y + 1 }
+                ];
+            }
+
+            toGrid(pos) {
+                return {
+                    x: Math.floor(pos.x / gridSize),
+                    y: Math.floor(pos.y / gridSize)
+                };
+            }
+
+            isCollision(pos) {
+                if (pos.x < 0 || pos.x >= canvas.width || pos.y < 0 || pos.y >= canvas.height) return true;
+                return snakes.some(s => s.body.some((segment, index) => 
+                    pos.x === segment.x && pos.y === segment.y && 
+                    (s !== this || index !== 0)
+                ));
+            }
+        }
+
+        // Game initialization
+        const snake1 = new Snake(10 * gridSize, 15 * gridSize, '#ff5555', { dx: 1, dy: 0 });
+        const snake2 = new Snake(30 * gridSize, 15 * gridSize, '#5555ff', { dx: -1, dy: 0 });
+        const snakes = [snake1, snake2];
+        let food = { x: 0, y: 0 };
+
+        function placeFood() {
+            const cols = Math.floor(canvas.width / gridSize);
+            const rows = Math.floor(canvas.height / gridSize);
+            do {
+                food.x = Math.floor(Math.random() * cols) * gridSize;
+                food.y = Math.floor(Math.random() * rows) * gridSize;
+            } while (snakes.some(s => s.body.some(segment => 
+                segment.x === food.x && segment.y === food.y
+            ));
+        }
+
+        function gameLoop() {
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw food
+            ctx.fillStyle = '#55ff55';
+            ctx.fillRect(food.x + 2, food.y + 2, gridSize - 4, gridSize - 4);
+
+            // Update and draw snakes
+            snakes.forEach(snake => {
+                if (snake.alive) snake.update();
+                ctx.fillStyle = snake.color;
+                snake.body.forEach(segment => {
+                    ctx.fillRect(
+                        segment.x + 2, 
+                        segment.y + 2,
+                        gridSize - 4, 
+                        gridSize - 4
+                    );
+                });
+            });
+
+            // Update score
+            scoreElement.textContent = `Red: ${snake1.score} | Blue: ${snake2.score}`;
+            if (!snake1.alive) scoreElement.textContent += ' (Red DEAD)';
+            if (!snake2.alive) scoreElement.textContent += ' (Blue DEAD)';
+            if (!snake1.alive && !snake2.alive) scoreElement.textContent += ' - GAME OVER!';
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        placeFood();
+        gameLoop();
+    </script>
+</body>
+</html>

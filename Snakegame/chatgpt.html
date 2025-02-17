@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Smart Snake Game – Mode Selection & Adjustable Speed Increase</title>
+  <style>
+    body {
+      margin: 0;
+      background: #222;
+      color: #eee;
+      font-family: sans-serif;
+      text-align: center;
+    }
+    #scoreBoard {
+      margin-top: 10px;
+      font-size: 18px;
+    }
+    #modeSelection {
+      margin-top: 20px;
+    }
+    #modeSelection button {
+      font-size: 18px;
+      margin: 5px;
+      padding: 10px 20px;
+      cursor: pointer;
+    }
+    #controls {
+      margin-top: 20px;
+      display: none;
+    }
+    /* Simple layout for directional buttons */
+    .control-row {
+      display: flex;
+      justify-content: center;
+      margin: 3px;
+    }
+    .control-button {
+      font-size: 18px;
+      padding: 10px;
+      margin: 3px;
+      width: 60px;
+      cursor: pointer;
+    }
+    canvas {
+      background: #000;
+      display: block;
+      margin: 20px auto;
+      border: 2px solid #555;
+    }
+  </style>
+</head>
+<body>
+  <h2>Smart Snake Game</h2>
+  <!-- Mode selection menu -->
+  <div id="modeSelection">
+    <p>Select Mode:</p>
+    <button id="btnUserVsAI">User vs AI</button>
+    <button id="btnAIVsAI">AI vs AI</button>
+  </div>
+  <!-- Score display -->
+  <div id="scoreBoard">Scores - Red: 0 | Blue: 0</div>
+  <!-- The game canvas -->
+  <canvas id="gameCanvas" width="500" height="500"></canvas>
+  <!-- Mobile on-screen controls (only shown in User vs AI mode) -->
+  <div id="controls">
+    <div class="control-row">
+      <button class="control-button" data-dir="up">▲</button>
+    </div>
+    <div class="control-row">
+      <button class="control-button" data-dir="left">◀</button>
+      <button class="control-button" data-dir="down">▼</button>
+      <button class="control-button" data-dir="right">▶</button>
+    </div>
+  </div>
+
+  <script>
+    // ----- Global Variables & Setup -----
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const cellSize = 20;
+    const gridWidth = canvas.width / cellSize;
+    const gridHeight = canvas.height / cellSize;
+    let lastTime = 0; // For game loop timing
+    let gameMode = null; // Will be set to "user" or "ai" after a choice
+
+    // ----- Snake Constructor -----
+    function Snake(x, y, dx, dy, color) {
+      this.segments = [{ x: x, y: y }];
+      this.dx = dx;
+      this.dy = dy;
+      this.nextDirection = { dx: dx, dy: dy };
+      this.color = color;
+      this.score = 0;
+      // Initial speed: ~6.67 squares per second.
+      this.speed = 6.67;
+      this.moveAccumulator = 0; // in seconds
+      this.isUser = false;      // by default, controlled by AI
+    }
+
+    // Create two snakes. In User vs AI mode, snake1 is user-controlled.
+    const snake1 = new Snake(5, Math.floor(gridHeight / 2), 1, 0, "red");
+    const snake2 = new Snake(gridWidth - 6, Math.floor(gridHeight / 2), -1, 0, "blue");
+    const snakes = [snake1, snake2];
+
+    // ----- Food Generation -----
+    let food = randomFood();
+    function randomFood() {
+      let pos = {};
+      let valid = false;
+      while (!valid) {
+        pos.x = Math.floor(Math.random() * gridWidth);
+        pos.y = Math.floor(Math.random() * gridHeight);
+        if (!isOccupied(pos.x, pos.y)) valid = true;
+      }
+      return pos;
+    }
+    function isOccupied(x, y) {
+      for (const snake of snakes) {
+        for (const seg of snake.segments) {
+          if (seg.x === x && seg.y === y) return true;
+        }
+      }
+      return false;
+    }
+
+    // ----- Drawing Functions -----
+    // Draw a cell with a small margin so segments are visibly separated.
+    function drawCell(x, y, color) {
+      const margin = 2; // pixels
+      ctx.fillStyle = color;
+      ctx.fillRect(x * cellSize + margin, y * cellSize + margin, cellSize - margin * 2, cellSize - margin * 2);
+    }
+    function draw() {
+      // Clear canvas.
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Draw food.
+      drawCell(food.x, food.y, "yellow");
+      // Draw each snake.
+      for (const snake of snakes) {
+        for (const seg of snake.segments) {
+          drawCell(seg.x, seg.y, snake.color);
+        }
+      }
+    }
+
+    // ----- Score Display -----
+    function updateScoreBoard() {
+      document.getElementById("scoreBoard").innerText =
+        "Scores - Red: " + snake1.score + " | Blue: " + snake2.score;
+    }
+
+    // ----- Smart AI Pathfinding (BFS) and Fallback -----
+    function posKey(pos) {
+      return pos.x + "," + pos.y;
+    }
+    function findPath(snake, food) {
+      const start = snake.segments[0];
+      const queue = [];
+      const visited = new Set();
+      const prev = {};
+      // Build obstacles – allow the moving snake’s tail cell (if not growing) to be free.
+      const obstacles = new Set();
+      for (const s of snakes) {
+        for (let i = 0; i < s.segments.length; i++) {
+          if (s === snake && s.segments.length > 1 && i === s.segments.length - 1) continue;
+          obstacles.add(posKey(s.segments[i]));
+        }
+      }
+      queue.push(start);
+      visited.add(posKey(start));
+      const directions = [
+        { dx: 0, dy: -1 },
+        { dx: 0, dy: 1 },
+        { dx: -1, dy: 0 },
+        { dx: 1, dy: 0 }
+      ];
+      while (queue.length > 0) {
+        const current = queue.shift();
+        if (current.x === food.x && current.y === food.y) {
+          let path = [];
+          let curr = current;
+          while (posKey(curr) in prev) {
+            path.push(curr);
+            curr = prev[posKey(curr)];
+          }
+          path.push(start);
+          path.reverse();
+          return path;
+        }
+        for (const dir of directions) {
+          const next = { x: current.x + dir.dx, y: current.y + dir.dy };
+          const key = posKey(next);
+          if (
+            next.x < 0 || next.x >= gridWidth ||
+            next.y < 0 || next.y >= gridHeight ||
+            visited.has(key) ||
+            obstacles.has(key)
+          ) continue;
+          visited.add(key);
+          prev[key] = current;
+          queue.push(next);
+        }
+      }
+      return null;
+    }
+    function getSmartDirection(snake, food) {
+      const path = findPath(snake, food);
+      if (path && path.length > 1) {
+        const head = snake.segments[0];
+        const nextStep = path[1];
+        return { dx: nextStep.x - head.x, dy: nextStep.y - head.y };
+      }
+      return getFallbackDirection(snake, food);
+    }
+    function getFallbackDirection(snake, food) {
+      const possible = [
+        { dx: 0, dy: -1 },
+        { dx: 0, dy: 1 },
+        { dx: -1, dy: 0 },
+        { dx: 1, dy: 0 }
+      ];
+      const opposite = { dx: -snake.dx, dy: -snake.dy };
+      let validMoves = possible.filter(dir => !(dir.dx === opposite.dx && dir.dy === opposite.dy));
+      validMoves.sort((a, b) => {
+        const distA = Math.abs(snake.segments[0].x + a.dx - food.x) +
+                      Math.abs(snake.segments[0].y + a.dy - food.y);
+        const distB = Math.abs(snake.segments[0].x + b.dx - food.x) +
+                      Math.abs(snake.segments[0].y + b.dy - food.y);
+        return distA - distB;
+      });
+      for (const dir of validMoves) {
+        const newX = snake.segments[0].x + dir.dx;
+        const newY = snake.segments[0].y + dir.dy;
+        if (newX < 0 || newX >= gridWidth || newY < 0 || newY >= gridHeight) continue;
+        if (isOccupied(newX, newY)) continue;
+        return dir;
+      }
+      return { dx: snake.dx, dy: snake.dy };
+    }
+
+    // ----- Single Move Function (one square move) -----
+    // Returns an object: { gameOver: Boolean, winner: String (if gameOver) }
+    function moveSnake(snake) {
+      let dir;
+      if (snake.isUser) {
+        // Use the stored nextDirection for user-controlled snake.
+        dir = snake.nextDirection;
+      } else {
+        // Otherwise, compute direction via smart AI.
+        dir = getSmartDirection(snake, food);
+      }
+      snake.dx = dir.dx;
+      snake.dy = dir.dy;
+      const head = snake.segments[0];
+      const newHead = { x: head.x + snake.dx, y: head.y + snake.dy };
+
+      // Check boundaries.
+      if (newHead.x < 0 || newHead.x >= gridWidth || newHead.y < 0 || newHead.y >= gridHeight) {
+        const winner = (snake === snake1 ? snake2.color : snake1.color);
+        return { gameOver: true, winner: winner };
+      }
+
+      // Determine if the snake is eating food.
+      const eating = (newHead.x === food.x && newHead.y === food.y);
+
+      // Self-collision check (if not eating, ignore tail because it will be removed).
+      const selfSegments = (eating || snake.segments.length === 1)
+                           ? snake.segments
+                           : snake.segments.slice(0, snake.segments.length - 1);
+      for (const seg of selfSegments) {
+        if (newHead.x === seg.x && newHead.y === seg.y) {
+          const winner = (snake === snake1 ? snake2.color : snake1.color);
+          return { gameOver: true, winner: winner };
+        }
+      }
+      // Collision check with the other snake.
+      for (const other of snakes) {
+        if (other === snake) continue;
+        for (const seg of other.segments) {
+          if (newHead.x === seg.x && newHead.y === seg.y) {
+            const winner = (snake === snake1 ? snake2.color : snake1.color);
+            return { gameOver: true, winner: winner };
+          }
+        }
+      }
+
+      // If safe, move the snake.
+      snake.segments.unshift(newHead);
+      if (eating) {
+        snake.score++;
+        // Increase speed by 0.2 squares/second per apple.
+        snake.speed += 0.2;
+        food = randomFood();
+      } else {
+        snake.segments.pop();
+      }
+      return { gameOver: false };
+    }
+
+    // ----- Game Loop (using requestAnimationFrame) -----
+    function gameLoop(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const deltaTime = (timestamp - lastTime) / 1000; // seconds
+      lastTime = timestamp;
+
+      let gameOver = false;
+      let winner = null;
+
+      // Process each snake’s moves based on its speed.
+      for (const snake of snakes) {
+        snake.moveAccumulator += deltaTime;
+        while (snake.moveAccumulator >= (1 / snake.speed)) {
+          const result = moveSnake(snake);
+          snake.moveAccumulator -= (1 / snake.speed);
+          if (result.gameOver) {
+            gameOver = true;
+            winner = result.winner;
+            break;
+          }
+        }
+        if (gameOver) break;
+      }
+
+      updateScoreBoard();
+      draw();
+
+      if (gameOver) {
+        setTimeout(() => {
+          alert("Game Over! Winner: " + winner);
+          resetGame();
+          // Show mode selection again so the user can choose a new mode.
+          document.getElementById("modeSelection").style.display = "block";
+          document.getElementById("controls").style.display = "none";
+          // Stop the loop (do not call requestAnimationFrame here).
+          lastTime = 0;
+        }, 10);
+      } else {
+        requestAnimationFrame(gameLoop);
+      }
+    }
+
+    // ----- Reset Game -----
+    function resetGame() {
+      snake1.segments = [{ x: 5, y: Math.floor(gridHeight / 2) }];
+      snake1.dx = 1;
+      snake1.dy = 0;
+      snake1.nextDirection = { dx: 1, dy: 0 };
+      snake1.score = 0;
+      snake1.speed = 6.67;
+      snake1.moveAccumulator = 0;
+
+      snake2.segments = [{ x: gridWidth - 6, y: Math.floor(gridHeight / 2) }];
+      snake2.dx = -1;
+      snake2.dy = 0;
+      snake2.nextDirection = { dx: -1, dy: 0 };
+      snake2.score = 0;
+      snake2.speed = 6.67;
+      snake2.moveAccumulator = 0;
+
+      food = randomFood();
+    }
+
+    // ----- User Input for User-Controlled Snake (snake1) -----
+    // Keyboard control.
+    document.addEventListener("keydown", function(e) {
+      if (!snake1.isUser) return;
+      let newDir;
+      if (e.key === "ArrowUp") newDir = { dx: 0, dy: -1 };
+      if (e.key === "ArrowDown") newDir = { dx: 0, dy: 1 };
+      if (e.key === "ArrowLeft") newDir = { dx: -1, dy: 0 };
+      if (e.key === "ArrowRight") newDir = { dx: 1, dy: 0 };
+      if (newDir) {
+        // Prevent reversing if snake length > 1.
+        if (snake1.segments.length > 1 &&
+            snake1.dx + newDir.dx === 0 &&
+            snake1.dy + newDir.dy === 0) return;
+        snake1.nextDirection = newDir;
+      }
+    });
+    // Mobile on-screen control buttons.
+    const controlButtons = document.querySelectorAll(".control-button");
+    controlButtons.forEach(button => {
+      button.addEventListener("click", () => {
+        if (!snake1.isUser) return;
+        let newDir;
+        const dir = button.getAttribute("data-dir");
+        if (dir === "up") newDir = { dx: 0, dy: -1 };
+        if (dir === "down") newDir = { dx: 0, dy: 1 };
+        if (dir === "left") newDir = { dx: -1, dy: 0 };
+        if (dir === "right") newDir = { dx: 1, dy: 0 };
+        if (newDir) {
+          if (snake1.segments.length > 1 &&
+              snake1.dx + newDir.dx === 0 &&
+              snake1.dy + newDir.dy === 0) return;
+          snake1.nextDirection = newDir;
+        }
+      });
+    });
+
+    // ----- Mode Selection Buttons -----
+    document.getElementById("btnUserVsAI").addEventListener("click", function() {
+      gameMode = "user";
+      snake1.isUser = true;
+      snake2.isUser = false;
+      document.getElementById("controls").style.display = "block";
+      document.getElementById("modeSelection").style.display = "none";
+      resetGame();
+      lastTime = 0;
+      requestAnimationFrame(gameLoop);
+    });
+    document.getElementById("btnAIVsAI").addEventListener("click", function() {
+      gameMode = "ai";
+      snake1.isUser = false;
+      snake2.isUser = false;
+      document.getElementById("controls").style.display = "none";
+      document.getElementById("modeSelection").style.display = "none";
+      resetGame();
+      lastTime = 0;
+      requestAnimationFrame(gameLoop);
+    });
+
+    // ----- Initialization: Initially show the mode selection only -----
+    updateScoreBoard();
+    draw();
+    // (Do not start the game loop until a mode is selected.)
+  </script>
+</body>
+</html>
